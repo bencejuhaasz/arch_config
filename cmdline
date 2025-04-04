@@ -1,0 +1,1 @@
+root=UUID=cc3842f2-a370-49cd-b338-2dfbe5422baf rootflags=subvol=@ rw rd.luks.uuid=faee1d58-e130-40da-9f12-74b0909a1080 rd.luks.uuid=3b71ce54-bf82-42ab-ab8c-d018b1e307a5 lsm=landlock,lockdown,yama,integrity,apparmor,bpf nvidia-drm.modeset=1 resume=UUID=d57966b0-56f7-4f49-b9ad-28a56dc735be nvidia.NVreg_PreserveVideoMemoryAllocations=0
