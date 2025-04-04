@@ -1,1 +1,2 @@
-# arch_config
+© Juhász Bence
+Minden jog fenntartva
