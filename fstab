@@ -1,0 +1,29 @@
+# Static information about the filesystems.
+# See fstab(5) for details.
+
+# <file system> <dir> <type> <options> <dump> <pass>
+# /dev/mapper/root
+UUID=cc3842f2-a370-49cd-b338-2dfbe5422baf	/         	btrfs     	rw,relatime,ssd,space_cache=v2,subvol=/@	0 0
+
+# /dev/mapper/root
+UUID=cc3842f2-a370-49cd-b338-2dfbe5422baf	/home     	btrfs     	rw,relatime,ssd,space_cache=v2,subvol=/@home	0 0
+
+# /dev/mapper/root
+UUID=cc3842f2-a370-49cd-b338-2dfbe5422baf	/root     	btrfs     	rw,relatime,ssd,space_cache=v2,subvol=/@root	0 0
+
+# /dev/mapper/root
+UUID=cc3842f2-a370-49cd-b338-2dfbe5422baf	/srv      	btrfs     	rw,relatime,ssd,space_cache=v2,subvol=/@srv	0 0
+
+# /dev/mapper/root
+UUID=cc3842f2-a370-49cd-b338-2dfbe5422baf	/var/cache	btrfs     	rw,relatime,ssd,space_cache=v2,subvol=/@cache	0 0
+
+# /dev/mapper/root
+UUID=cc3842f2-a370-49cd-b338-2dfbe5422baf	/var/log  	btrfs     	rw,relatime,ssd,space_cache=v2,subvol=/@log	0 0
+
+# /dev/mapper/root
+UUID=cc3842f2-a370-49cd-b338-2dfbe5422baf	/var/tmp  	btrfs     	rw,relatime,ssd,space_cache=v2,subvol=/@tmp	0 0
+
+# /dev/nvme0n1p1
+UUID=518A-F90D      	/boot/efi 	vfat      	rw,relatime,fmask=0022,dmask=0022,codepage=437,iocharset=ascii,shortname=mixed,utf8,errors=remount-ro	0 2
+
+UUID=d57966b0-56f7-4f49-b9ad-28a56dc735be none swap defaults 0 0
