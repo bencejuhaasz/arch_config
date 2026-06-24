@@ -1,24 +1,3 @@
-# bcont profiles — ~/.config/bcont/profiles
-#
-# Keys (all optional):
-#   name      = override sandbox name (default: profile section name)
-#   net       = true | false
-#   dbus        = true | false     (session D-Bus portals proxy)
-#   system_dbus = true | false     (system D-Bus: NetworkManager, UPower, login1, bluez)
-#   pipewire  = true | false
-#   gpu       = full | render | false
-#   cli       = true | false       (no Wayland socket)
-#   fido      = true | false       (FIDO2/U2F security keys via /dev/hidraw*)
-#   home      = ~/path             (persistent home; omit for tmpfs)
-#   ro        = ~/path             (read-only bind, repeatable)
-#   rw        = ~/path             (read-write bind, repeatable)
-#   cmd       = command [args]
-#
-# Usage:
-#   bcont firefox                    # run this profile
-#   bcont firefox -N                 # profile + flag override
-#   bcont firefox -- --private-window  # profile + extra cmd args
-
 [brave]
 cmd = zsh -C /home/sandbox/launch.sh
 home = /home/user/bcont-boxes/brave
