@@ -1,2 +1,1 @@
-© Juhász Bence
-Minden jog fenntartva
+# Desktop Arch config for security and performance
