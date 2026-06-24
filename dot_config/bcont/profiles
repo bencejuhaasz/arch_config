@@ -1,0 +1,99 @@
+# bcont profiles — ~/.config/bcont/profiles
+#
+# Keys (all optional):
+#   name      = override sandbox name (default: profile section name)
+#   net       = true | false
+#   dbus        = true | false     (session D-Bus portals proxy)
+#   system_dbus = true | false     (system D-Bus: NetworkManager, UPower, login1, bluez)
+#   pipewire  = true | false
+#   gpu       = full | render | false
+#   cli       = true | false       (no Wayland socket)
+#   fido      = true | false       (FIDO2/U2F security keys via /dev/hidraw*)
+#   home      = ~/path             (persistent home; omit for tmpfs)
+#   ro        = ~/path             (read-only bind, repeatable)
+#   rw        = ~/path             (read-write bind, repeatable)
+#   cmd       = command [args]
+#
+# Usage:
+#   bcont firefox                    # run this profile
+#   bcont firefox -N                 # profile + flag override
+#   bcont firefox -- --private-window  # profile + extra cmd args
+
+[brave]
+cmd = zsh -C /home/sandbox/launch.sh
+home = /home/user/bcont-boxes/brave
+gpu = full 
+dbus = true
+pipewire = true
+pulse = true
+net = true
+ro = /opt/brave-bin
+ro = /etc/resolv.conf
+fido = true
+
+[qbt]
+cmd = qbittorrent
+home = /home/user/bcont-boxes/qbt
+gpu = render
+dbus = true
+net = true
+ro = /etc/resolv.conf
+
+[mullvad-browser]
+cmd = mullvad-browser
+#home = /home/user/bcont-boxes/mullvad-browser
+gpu = render
+dbus = false
+pulse = true
+pipewire = true
+net = true
+ro = /etc/resolv.conf
+ro = /opt/mullvad-browser
+
+[syncthing]
+cmd = zsh -C /home/sandbox/launch.sh
+net = true
+rw = /home/user/BwProjects
+rw = /home/user/REAProjects
+rw = /home/user/Obisdian
+home = /home/user/bcont-boxes/syncthing
+ro = /etc
+
+[bcont-dev]
+home = /home/user/bcont-boxes/bcont-dev
+cmd = tmux new-session zsh
+net = true
+ro = /etc
+
+[media]
+cmd = tmux new-session zsh
+home = /home/user/bcont-boxes/media
+gpu = render
+dbus = true
+pulse = true
+net = true
+ro = /etc
+
+[daw]
+home = /home/user/bcont-boxes/daw
+cmd = tmux new-session zsh
+ro = /etc
+rw = /home/user/bitwig-studio
+rw = /home/user/.BitwigStudio
+rw = /home/user/.wine
+rw = /home/user/BwProjects
+gpu = full
+net = true
+pipewire = true
+pulse = true
+
+[obsidian]
+cmd = obsidian
+ro = /etc/resolv.conf
+rw = /home/user/Obisdian
+home = /home/user/bcont-boxes/obsidian
+gpu = render
+net = true
+dbus = none
+pipewire = none
+pulse = none

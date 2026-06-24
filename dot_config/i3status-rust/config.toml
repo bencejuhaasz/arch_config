@@ -1,0 +1,27 @@
+[theme]
+theme = "gruvbox-dark"
+
+[icons]
+icons = "material-nf"
+
+[[block]]
+block = "custom"
+command = "echo "
+interval = "once"
+
+[[block.click]]
+button = "left"
+cmd = "pkill -SIGRTMIN wvkbd-deskintl"
+
+[[block]]
+block = "cpu"
+
+[[block]]
+block = "memory"
+
+[[block]]
+block = "battery"
+device = "BAT1"
+format = "$percentage $icon"
+[[block]]
+block = "time"
