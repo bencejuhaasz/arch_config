@@ -1,0 +1,40 @@
+#!/bin/bash
+build() {
+    # Shell and core utils
+    add_binary /usr/bin/bash
+    add_binary btrfs
+    add_binary find
+    add_binary sort
+    add_binary cp
+    add_binary mv
+    add_binary sync
+    add_binary reboot
+    add_binary mount
+    add_binary umount
+    add_binary mkdir
+    add_binary ls
+    add_binary grep
+    add_binary date
+    add_binary sleep
+
+    # Kernel modules for FAT ESP
+    add_module vfat
+    add_module nls_cp437
+    add_module nls_ascii
+
+    # The actual rescue script that the service unit runs
+    add_file /usr/lib/systemd/scripts/rescue-root-selector
+
+    # Install the service unit explicitly (add_systemd_unit's file search is unreliable)
+    add_file /etc/initcpio/systemd/rescue-selector.service /usr/lib/systemd/system/rescue-selector.service
+
+    # Enable it so it runs automatically
+    add_symlink "/usr/lib/systemd/system/initrd.target.wants/rescue-selector.service" "/usr/lib/systemd/system/rescue-selector.service"
+}
+
+help() {
+    cat <<HELPEOF
+This hook drops into an interactive root-state selector when the kernel
+cmdline contains rd.rescue_selector. Designed for systemd-based initramfs.
+HELPEOF
+}

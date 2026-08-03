@@ -1,0 +1,20 @@
+[Unit]
+Description=Btrfs root state selector
+DefaultDependencies=no
+# Must run AFTER the LUKS device appears but BEFORE systemd mounts it
+# as sysroot. Ordering against the mount unit directly (not just the
+# target) prevents the parallel-start race.
+After=dev-mapper-root.device
+Before=sysroot.mount
+
+# Only activate when rescue=1 is on the kernel cmdline
+ConditionKernelCommandLine=rd.rescue_selector
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/console
+ExecStart=/usr/lib/systemd/scripts/rescue-root-selector
+

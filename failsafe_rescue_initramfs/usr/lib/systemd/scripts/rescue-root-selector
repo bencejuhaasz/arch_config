@@ -1,0 +1,89 @@
+#!/bin/bash
+# Rescue root-state selector — systemd initramfs edition.
+# Invoked by rescue.service; ConditionKernelCommandLine already
+# confirmed rescue=1, so we go straight to work.
+
+echo "=== RESCUE MODE: root state selector ==="
+mkdir -p /rescue-mnt
+
+if ! mount -t btrfs -o subvolid=5 /dev/mapper/root /rescue-mnt; then
+    echo "Could not mount root btrfs volume. Continuing normal boot."
+    exit 0
+fi
+sync
+
+echo ""
+echo "A snapshot is not a guaranteed-good state, just a guess."
+echo "Nothing you pick here is destroyed — every prior root state"
+echo "stays available to come back to."
+echo ""
+echo "-- Snapshots (@snapshots/<ID>/snapshot) --"
+btrfs subvolume list -s /rescue-mnt | grep '@snapshots/'
+echo ""
+echo "-- Previous root states --"
+ls -1 /rescue-mnt | grep '^@prev-' | sort
+echo ""
+echo "Enter one of:"
+echo "  a snapshot ID (e.g. 194)          -> try that snapshot as new root"
+echo "  a full @prev-<timestamp> name     -> go back to that earlier state"
+echo "  blank                             -> skip, boot current @ as-is"
+printf "> "
+read choice
+
+if [ -z "$choice" ]; then
+    echo "No change. Continuing normal boot in 3s..."
+    umount /rescue-mnt
+    sleep 3
+    exit 0
+fi
+
+if echo "$choice" | grep -q '^@prev-'; then
+    target="/rescue-mnt/$choice"
+else
+    target="/rescue-mnt/@snapshots/${choice}/snapshot"
+fi
+
+if [ ! -d "$target" ]; then
+    echo "Not found: $choice. No change made."
+    umount /rescue-mnt
+    sleep 3
+    exit 0
+fi
+
+ts=$(date +%s)
+echo "Setting current @ aside as @prev-$ts (not deleted — still selectable next time)"
+mv /rescue-mnt/@ "/rescue-mnt/@prev-$ts"
+
+btrfs subvolume snapshot "$target" /rescue-mnt/@
+
+# Restore matching UKI from the chosen state's archive
+archive_dir="/rescue-mnt/@/var/lib/uki-archive"
+uki_to_restore=$(find "$archive_dir" -name '*.efi' 2>/dev/null | sort | tail -n1)
+
+if [ -n "$uki_to_restore" ]; then
+    mkdir -p /rescue-esp
+    # UPDATE THIS to your actual ESP partition (check your fstab)
+    if mount -t vfat /dev/nvme0n1p1 /rescue-esp; then
+        echo "Restoring matching UKI: $uki_to_restore"
+        cp "$uki_to_restore" /rescue-esp/EFI/Linux/arch-linux.efi.new
+        sync
+        mv /rescue-esp/EFI/Linux/arch-linux.efi.new /rescue-esp/EFI/Linux/arch-linux.efi
+        sync
+        umount /rescue-esp
+    else
+        echo "WARNING: could not mount ESP — UKI NOT restored."
+        echo "The root state was still switched; the kernel/initramfs"
+        echo "on /efi may not match it. Check manually before rebooting."
+    fi
+else
+    echo "WARNING: no archived UKI found inside this state — likely"
+    echo "predates the archiving setup. /efi is left untouched; you"
+    echo "may be pairing an old root with a newer kernel."
+fi
+
+echo "New root: $choice"
+echo "Reboot normally to try it. If it fails, come back here — your"
+echo "previous state (@prev-$ts) and every earlier one will still be listed."
+umount /rescue-mnt
+sleep 2
+reboot -f
