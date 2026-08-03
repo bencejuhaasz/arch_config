@@ -1,0 +1,10 @@
+[Trigger]
+Operation = Upgrade
+Operation = Install
+Type = Package
+Target = linux
+
+[Action]
+Description = Rebuild and sign both UKIs after kernel update
+When = PostTransaction
+Exec = /usr/local/bin/rebuild-uki.sh
