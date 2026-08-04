@@ -7,7 +7,11 @@ UUID=d9993c4d-d0ee-4740-9eea-7f46e706d936	/.snapshots	btrfs     	rw,noatime,comp
 # /dev/mapper/root
 UUID=d9993c4d-d0ee-4740-9eea-7f46e706d936	/home     	btrfs     	rw,noatime,compress=zstd:3,ssd,space_cache=v2,subvol=/@home	0 0
 
-# /dev/nvme0n1p1
-UUID=4A06-58B9      	/efi      	vfat      	rw,relatime,fmask=0022,dmask=0022,codepage=437,iocharset=ascii,shortname=mixed,utf8,errors=remount-ro	0 2
+# /dev/mapper/root
+UUID=d9993c4d-d0ee-4740-9eea-7f46e706d936       /swap           btrfs           rw,noatime,compress=zstd:3,ssd,space_cache=v2,subvol=/@swap  0 0
 
-/swap/swapfile none swap defaults 0 0
+# /dev/nvme0n1p1
+UUID=4A06-58B9      	                        /efi            vfat            rw,relatime,fmask=0022,dmask=0022,codepage=437,iocharset=ascii,shortname=mixed,utf8,errors=remount-ro	0 2
+
+/swap/swapfile 					none 		swap 		defaults 0 0
+

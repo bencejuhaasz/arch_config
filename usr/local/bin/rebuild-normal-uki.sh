@@ -13,7 +13,7 @@ ukify build \
   --pcr-banks=sha256 \
   --output=/efi/EFI/Linux/arch-linux.efi
 
-sbctl sign-all
+sbctl sign -s /efi/EFI/Linux/arch-linux.efi
 
 # Archive a copy of the (already-signed) normal UKI INSIDE @, so that any
 # future btrfs snapshot of @ automatically captures the exact UKI that was

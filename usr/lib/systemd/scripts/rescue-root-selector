@@ -1,7 +1,7 @@
 #!/bin/bash
 # Rescue root-state selector — systemd initramfs edition.
-# Invoked by rescue.service; ConditionKernelCommandLine already
-# confirmed rescue=1, so we go straight to work.
+# Invoked by rescue-selector.service; ConditionKernelCommandLine already
+# confirmed rd.rescue_selector, so no manual cmdline check is needed here.
 
 echo "=== RESCUE MODE: root state selector ==="
 mkdir -p /rescue-mnt
@@ -11,6 +11,7 @@ if ! mount -t btrfs -o subvolid=5 /dev/mapper/root /rescue-mnt; then
     exit 0
 fi
 sync
+clear   # start from a blank screen — anything printed before this point is now gone
 
 echo ""
 echo "A snapshot is not a guaranteed-good state, just a guess."
@@ -27,6 +28,14 @@ echo "Enter one of:"
 echo "  a snapshot ID (e.g. 194)          -> try that snapshot as new root"
 echo "  a full @prev-<timestamp> name     -> go back to that earlier state"
 echo "  blank                             -> skip, boot current @ as-is"
+
+# Brief pause + redraw of just the decision line — belt-and-suspenders
+# in case anything (a mount warning, a udev message loglevel=3 still
+# lets through) slipped in above despite the cmdline quieting. This is
+# the one line that has to be unambiguous no matter what else happened.
+sleep 1
+echo ""
+echo ">>> snapshot ID, @prev-<timestamp>, or blank to skip <<<"
 printf "> "
 read choice
 

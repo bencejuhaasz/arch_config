@@ -4,6 +4,70 @@
 
 ---
 
+## Phase -1 — Move the swapfile out of `@` (prerequisite)
+
+**Do this before everything else.** A swapfile cannot tolerate living inside a subvolume that ever gets snapshotted — this is a documented btrfs limitation, not something introduced by the rescue design. Every `btrfs subvolume snapshot` the rescue hook performs shares extents with the source, including the swapfile's, and btrfs correctly refuses true NOCOW swap once extents are shared. Symptom: `BTRFS warning (device dm-0): swapfile must not be copy-on-write` in dmesg, repeated warnings before (sometimes) eventually succeeding.
+
+This is worse in this design specifically because manual pruning is permanent here — `@prev-*` and old snapshots are never auto-deleted, so whatever a snapshot's source was never goes away, and the cross-reference never clears on its own. Left alone, this recurs on every future rescue action indefinitely.
+
+### -1.1 Deactivate current swap
+
+```bash
+sudo swapoff /swap/swapfile
+```
+
+### -1.2 Create a dedicated, never-snapshotted sibling subvolume
+
+```bash
+mkdir -p /rescue-mnt-tmp
+sudo mount -t btrfs -o subvolid=5 /dev/mapper/root /rescue-mnt-tmp
+sudo btrfs subvolume create /rescue-mnt-tmp/@swap
+sudo umount /rescue-mnt-tmp
+```
+
+### -1.3 Mount it and recreate the swapfile fresh
+
+Retroactively `chattr +C`-ing the old swapfile does not undo extents that are already shared — recreate it clean instead.
+```bash
+sudo mkdir -p /swap
+echo 'UUID=<your-root-uuid>  /swap  btrfs  rw,noatime,compress=zstd:3,ssd,space_cache=v2,subvol=/@swap  0 0' | sudo tee -a /etc/fstab
+sudo mount /swap
+sudo rm -f /swap/swapfile   # if the old one got carried along accidentally — should not exist yet on a fresh subvolume
+sudo btrfs filesystem mkswapfile --size 8G /swap/swapfile
+```
+Adjust `8G` to match your current swap size (`8388604k` ≈ 8G, per your log).
+
+### -1.4 Recompute the hibernation resume offset
+
+You're using hibernate/resume (`resume_offset=2904650` in your current cmdline) — moving the file changes its physical offset.
+```bash
+sudo btrfs inspect-internal map-swapfile -r /swap/swapfile
+```
+Put the new value into `/etc/kernel/cmdline`, replacing the old `resume_offset=...`.
+
+### -1.5 Activate and verify
+
+```bash
+sudo swapon /swap/swapfile
+sudo dmesg | grep -i swap   # should show no "must not be copy-on-write" warning now
+```
+
+### -1.6 Rebuild and re-sign — cmdline changed
+
+The resume offset is embedded in the UKI's cmdline, which is PCR11-signed — this isn't optional cleanup.
+```bash
+sudo /usr/local/bin/rebuild-normal-uki.sh
+```
+(If Phase 6 isn't set up yet, use the manual `ukify build` commands from Phase 3 instead, once you reach that point.)
+
+### -1.7 Known limitation — doesn't apply retroactively
+
+Your existing snapshots (1, 189–194) still have the old fstab and in-`@` swapfile layout frozen inside them. Rolling back to any of those will still hit this bug — the fix only protects states created *after* you apply it. Take one fresh snapshot once this is done, so you have at least one clean candidate going forward.
+
+**Rollback for this phase:** if anything here goes wrong, your original `/swap/swapfile` inside `@` still exists untouched until you explicitly delete it (step -1.3 only removes it if accidentally carried into the new subvolume) — you can `swapoff` the new one and `swapon` the old path again while you sort out the issue.
+
+---
+
 ## Phase 0 — Safety net before touching anything
 
 ```bash
@@ -24,187 +88,233 @@ It will print a recovery key **once**. Write it down physically (paper), store o
 
 ---
 
-## Phase 1 — Rescue hook (mkinitcpio)
+## Phase 1 — Rescue hook (systemd-in-initramfs)
 
-### 1.1 Create the hook
+This uses a **systemd oneshot service inside the initramfs**, not a busybox/ash `run_hook()` — correct, since `sd-encrypt` already means your initramfs is systemd-based rather than pure busybox, so nothing here can assume busybox applets exist. This is also a real improvement over an ash hook: unit ordering (`After=`/`Before=`) is more precise than mkinitcpio's `HOOKS=()` array position, and the cmdline gate uses systemd's own `ConditionKernelCommandLine=` instead of a manual `grep /proc/cmdline`.
+
+### 1.1 The mkinitcpio install hook
 
 `/etc/initcpio/install/rescue`:
 ```bash
 #!/bin/bash
 build() {
+    # Shell and core utils — nothing here can assume busybox is present
+    add_binary /usr/bin/bash
     add_binary btrfs
     add_binary find
     add_binary sort
     add_binary cp
-    # Needed to mount the vfat ESP to restore the correct archived UKI
+    add_binary mv
+    add_binary sync
+    add_binary reboot
+    add_binary mount
+    add_binary umount
+    add_binary mkdir
+    add_binary ls
+    add_binary grep
+    add_binary date
+    add_binary sleep
+
+    # Kernel modules for the FAT ESP
     add_module vfat
     add_module nls_cp437
     add_module nls_ascii
-    add_runscript
+
+    # The actual rescue script that the service unit runs
+    add_file /usr/lib/systemd/scripts/rescue-root-selector
+
+    # Install the service unit explicitly — add_systemd_unit's file
+    # search proved unreliable, so the path is given directly instead.
+    add_file /etc/initcpio/systemd/rescue-selector.service /usr/lib/systemd/system/rescue-selector.service
+
+    # Enable it so it runs automatically — there's no live systemctl
+    # daemon-reload at initramfs-build time, so the WantedBy symlink
+    # has to be created by hand.
+    add_symlink "/usr/lib/systemd/system/initrd.target.wants/rescue-selector.service" "/usr/lib/systemd/system/rescue-selector.service"
 }
 
 help() {
     cat <<HELPEOF
 This hook drops into an interactive root-state selector when the kernel
-cmdline contains rescue=1. It swaps btrfs root states non-destructively
-and restores the UKI that was archived alongside the chosen state.
-Otherwise it's a no-op.
+cmdline contains rd.rescue_selector. Designed for systemd-based initramfs.
 HELPEOF
 }
 ```
 
-`/etc/initcpio/hooks/rescue`:
+### 1.2 The service unit
+
+`/etc/initcpio/systemd/rescue-selector.service`:
+```ini
+[Unit]
+Description=Btrfs root state selector
+DefaultDependencies=no
+# Must run AFTER the LUKS device appears but BEFORE systemd mounts it
+# as sysroot. Ordering against the mount unit directly (not just the
+# target) prevents the parallel-start race.
+After=dev-mapper-root.device
+Before=sysroot.mount
+
+# Only activate when rd.rescue_selector is on the kernel cmdline
+ConditionKernelCommandLine=rd.rescue_selector
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/console
+ExecStart=/usr/lib/systemd/scripts/rescue-root-selector
+```
+`StandardInput=tty` / `TTYPath=/dev/console` matter more than they look — without them, the script's interactive `read choice` has nothing to read from, since a bare service unit has no console wired up by default.
+
+### 1.3 The actual selector script
+
+`/usr/lib/systemd/scripts/rescue-root-selector`:
 ```bash
-#!/usr/bin/ash
-run_hook() {
-    grep -q 'rescue=1' /proc/cmdline || return 0
+#!/bin/bash
+# Rescue root-state selector — systemd initramfs edition.
+# Invoked by rescue-selector.service; ConditionKernelCommandLine already
+# confirmed rd.rescue_selector, so no manual cmdline check is needed here.
 
-    echo "=== RESCUE MODE: root state selector ==="
-    mkdir -p /rescue-mnt
+echo "=== RESCUE MODE: root state selector ==="
+mkdir -p /rescue-mnt
 
-    # Mapper name confirmed as "root" from your fstab (/dev/mapper/root).
-    # subvolid=5 mounts the top-level volume so @, @home, @snapshots,
-    # and any @prev-* candidates are all visible as siblings.
-    if ! mount -t btrfs -o subvolid=5 /dev/mapper/root /rescue-mnt; then
-        echo "Could not mount root btrfs volume. Continuing normal boot."
-        return 0
-    fi
-    # Force a commit now so anything pending from before rescue was
-    # entered is durable before we start the swap below — the swap
-    # itself should be judged from a clean baseline, not carrying
-    # forward whatever was mid-flight when you rebooted into rescue.
-    sync
+if ! mount -t btrfs -o subvolid=5 /dev/mapper/root /rescue-mnt; then
+    echo "Could not mount root btrfs volume. Continuing normal boot."
+    exit 0
+fi
+sync
+clear   # start from a blank screen — anything printed before this point is now gone
 
-    echo "A snapshot is not a guaranteed-good state, just a guess."
-    echo "Nothing you pick here is destroyed — every prior root state"
-    echo "stays available to come back to."
-    echo ""
-    echo "-- Snapshots (@snapshots/<ID>/snapshot) --"
-    btrfs subvolume list -s /rescue-mnt | grep '@snapshots/'
-    echo ""
-    echo "-- Previous root states (earlier rescue attempts, oldest = original @) --"
-    ls -1 /rescue-mnt | grep '^@prev-' | sort
-    echo ""
-    echo "Enter one of:"
-    echo "  a snapshot ID (e.g. 194)          -> try that snapshot as new root"
-    echo "  a full @prev-<timestamp> name     -> go back to that earlier state"
-    echo "  blank                             -> skip, boot current @ as-is"
-    printf "> "
-    read choice
+echo ""
+echo "A snapshot is not a guaranteed-good state, just a guess."
+echo "Nothing you pick here is destroyed — every prior root state"
+echo "stays available to come back to."
+echo ""
+echo "-- Snapshots (@snapshots/<ID>/snapshot) --"
+btrfs subvolume list -s /rescue-mnt | grep '@snapshots/'
+echo ""
+echo "-- Previous root states --"
+ls -1 /rescue-mnt | grep '^@prev-' | sort
+echo ""
+echo "Enter one of:"
+echo "  a snapshot ID (e.g. 194)          -> try that snapshot as new root"
+echo "  a full @prev-<timestamp> name     -> go back to that earlier state"
+echo "  blank                             -> skip, boot current @ as-is"
 
-    if [ -z "$choice" ]; then
-        echo "No change. Continuing normal boot in 3s..."
-        umount /rescue-mnt
-        sleep 3
-        return 0
-    fi
+# Brief pause + redraw of just the decision line — belt-and-suspenders
+# in case anything (a mount warning, a udev message loglevel=3 still
+# lets through) slipped in above despite the cmdline quieting. This is
+# the one line that has to be unambiguous no matter what else happened.
+sleep 1
+echo ""
+echo ">>> snapshot ID, @prev-<timestamp>, or blank to skip <<<"
+printf "> "
+read choice
 
-    if echo "$choice" | grep -q '^@prev-'; then
-        target="/rescue-mnt/$choice"
-    else
-        target="/rescue-mnt/@snapshots/${choice}/snapshot"
-    fi
-
-    if [ ! -d "$target" ]; then
-        echo "Not found: $choice. No change made."
-        umount /rescue-mnt
-        sleep 3
-        return 0
-    fi
-
-    ts=$(date +%s)
-    echo "Setting current @ aside as @prev-$ts (not deleted — still selectable next time)"
-    mv /rescue-mnt/@ "/rescue-mnt/@prev-$ts"
-
-    # snapper snapshots are read-only; a @prev-* is already writable if it
-    # was itself once a live @. Either way a fresh writable snapshot is
-    # taken as the new @ so nothing here is ever mounted read-only by mistake.
-    btrfs subvolume snapshot "$target" /rescue-mnt/@
-
-    # Find the UKI that was archived alongside this exact root state.
-    # See Phase 6 — every kernel build copies its UKI into @ itself, so
-    # whatever snapshot/state you picked already contains, frozen inside
-    # it, the correct matching UKI. No building, no signing, no chroot —
-    # just finding the newest archived file inside the state you chose.
-    archive_dir="/rescue-mnt/@/var/lib/uki-archive"
-    uki_to_restore=$(find "$archive_dir" -name '*.efi' 2>/dev/null | sort | tail -n1)
-
-    if [ -n "$uki_to_restore" ]; then
-        mkdir -p /rescue-esp
-        # /dev/nvme0n1p1 confirmed as the ESP from fstab (mounted at /efi normally)
-        if mount -t vfat /dev/nvme0n1p1 /rescue-esp; then
-            echo "Restoring matching UKI: $uki_to_restore"
-            # Copy to a temp name then rename, rather than overwriting the
-            # live file directly — an interrupted direct overwrite (power
-            # loss mid-copy) would leave a corrupt boot entry; a rename on
-            # the same filesystem is far closer to atomic.
-            cp "$uki_to_restore" /rescue-esp/EFI/Linux/arch-linux.efi.new
-            sync
-            mv /rescue-esp/EFI/Linux/arch-linux.efi.new /rescue-esp/EFI/Linux/arch-linux.efi
-            sync
-            umount /rescue-esp
-        else
-            echo "WARNING: could not mount ESP — UKI NOT restored."
-            echo "The root state was still switched; the kernel/initramfs"
-            echo "on /efi may not match it. Check manually before rebooting."
-        fi
-    else
-        echo "WARNING: no archived UKI found inside this state — likely"
-        echo "predates the archiving setup. /efi is left untouched; you"
-        echo "may be pairing an old root with a newer kernel."
-    fi
-
-    echo "New root: $choice"
-    echo "Reboot normally to try it. If it fails, come back here — your"
-    echo "previous state (@prev-$ts) and every earlier one will still be listed."
+if [ -z "$choice" ]; then
+    echo "No change. Continuing normal boot in 3s..."
     umount /rescue-mnt
-    sleep 2
-    reboot -f
-}
+    sleep 3
+    exit 0
+fi
+
+if echo "$choice" | grep -q '^@prev-'; then
+    target="/rescue-mnt/$choice"
+else
+    target="/rescue-mnt/@snapshots/${choice}/snapshot"
+fi
+
+if [ ! -d "$target" ]; then
+    echo "Not found: $choice. No change made."
+    umount /rescue-mnt
+    sleep 3
+    exit 0
+fi
+
+ts=$(date +%s)
+echo "Setting current @ aside as @prev-$ts (not deleted — still selectable next time)"
+mv /rescue-mnt/@ "/rescue-mnt/@prev-$ts"
+
+btrfs subvolume snapshot "$target" /rescue-mnt/@
+
+# Restore matching UKI from the chosen state's archive
+archive_dir="/rescue-mnt/@/var/lib/uki-archive"
+uki_to_restore=$(find "$archive_dir" -name '*.efi' 2>/dev/null | sort | tail -n1)
+
+if [ -n "$uki_to_restore" ]; then
+    mkdir -p /rescue-esp
+    # UPDATE THIS to your actual ESP partition (check your fstab)
+    if mount -t vfat /dev/nvme0n1p1 /rescue-esp; then
+        echo "Restoring matching UKI: $uki_to_restore"
+        cp "$uki_to_restore" /rescue-esp/EFI/Linux/arch-linux.efi.new
+        sync
+        mv /rescue-esp/EFI/Linux/arch-linux.efi.new /rescue-esp/EFI/Linux/arch-linux.efi
+        sync
+        umount /rescue-esp
+    else
+        echo "WARNING: could not mount ESP — UKI NOT restored."
+        echo "The root state was still switched; the kernel/initramfs"
+        echo "on /efi may not match it. Check manually before rebooting."
+    fi
+else
+    echo "WARNING: no archived UKI found inside this state — likely"
+    echo "predates the archiving setup. /efi is left untouched; you"
+    echo "may be pairing an old root with a newer kernel."
+fi
+
+echo "New root: $choice"
+echo "Reboot normally to try it. If it fails, come back here — your"
+echo "previous state (@prev-$ts) and every earlier one will still be listed."
+umount /rescue-mnt
+sleep 2
+reboot -f
 ```
 
-**Why nothing is ever deleted here:** the whole premise of your question was "a snapshot is a guess, not a guarantee" — so the script must never assume the state you just picked is good. It only finds out if you tell it, by coming back to rescue. Every `@prev-*` it creates is a full, real root filesystem, not a marker — so if attempt #1 (snapshot 190) fails to boot, you go back to rescue, see `@prev-<ts1>` (your original) and can either try a different snapshot (191, 193...) or go straight back to `@prev-<ts1>`. If attempt #2 also fails, you now have `@prev-<ts1>` (original) and `@prev-<ts2>` (the 190 attempt) both still listed — you're never worse off than before, and you can try as many candidates as you have snapshots for.
+**On the `clear` and redraw:** this addresses the reported problem of systemd/kernel messages non-deterministically interleaving with the prompt at exactly the moment you need to read it. The cmdline quieting (1.5) removes most of the noise at the source; `clear` plus the redrawn decision line right before `read` is the fallback for whatever gets through anyway — the goal is that the very last thing on screen is always the same unambiguous line, regardless of what happened above it.
 
-**Getting back to the literal original:** the first `@prev-*` timestamp ever created (chronologically earliest in the list) is your pristine pre-rescue state, untouched by any rollback attempt. It's never auto-removed, so it's always your ultimate fallback alongside the recovery-key/USB path.
+**Why nothing is ever deleted here:** the whole premise is "a snapshot is a guess, not a guarantee" — so the script must never assume the state you just picked is good. It only finds out if you tell it, by coming back to rescue. Every `@prev-*` it creates is a full, real root filesystem, not a marker — so if attempt #1 (snapshot 190) fails to boot, you go back to rescue, see `@prev-<ts1>` (your original) and can either try a different snapshot or go straight back to `@prev-<ts1>`. If attempt #2 also fails, both remain listed — you're never worse off than before.
 
-**Disk space implication (revisit from earlier):** this is a stronger version of the `@broken-*` space concern from before — now every *attempt*, not just one broken state, accumulates. Cleanup is still manual and deliberate:
+**Getting back to the literal original:** the first `@prev-*` timestamp ever created (chronologically earliest) is your pristine pre-rescue state, untouched by any rollback attempt. Never auto-removed, so always your ultimate fallback alongside the recovery-key/USB path.
+
+**Disk space:** every attempt accumulates. Cleanup is manual and deliberate:
 ```bash
 btrfs subvolume delete /@prev-<timestamp>
 ```
-Do this only for attempts you're confident you'll never want back, from normal boot once things are stable — never automatically, and never from inside the rescue hook itself, since that removes exactly the safety margin this whole design exists to provide.
+Do this only for attempts you're confident you'll never want back, from normal boot once things are stable — never automatically, and never from inside the rescue script itself.
 
-**Note on scope:** this only manipulates `@` (root). Your `@home` and `@snapshots` subvolumes are untouched — you don't want a root rollback to also revert your home directory or delete the snapshot history you're choosing from. If you ever *do* want home included, that needs a separate, explicit step — don't fold it into this one silently.
+**Note on scope:** this only manipulates `@` (root). `@home` and `@snapshots` are untouched.
 
-**Note on snapper bookkeeping:** this hook manipulates subvolumes directly with `btrfs`, bypassing snapper's own metadata. After a rollback, `snapper list` will still show its own history unchanged — cosmetic only, doesn't affect anything the hook does.
+**Note on snapper bookkeeping:** this bypasses snapper's own metadata via raw `btrfs` calls — `snapper list` will still show its own history unchanged after a rollback, cosmetic only.
 
 ```bash
-chmod +x /etc/initcpio/install/rescue /etc/initcpio/hooks/rescue
+chmod +x /etc/initcpio/install/rescue
+chmod +x /usr/lib/systemd/scripts/rescue-root-selector
 ```
 
-### 1.2 Add to mkinitcpio.conf
+### 1.4 Add to mkinitcpio.conf
 
-Edit `/etc/mkinitcpio.conf`, add `rescue` **after** your encrypt hook, before `filesystems`:
-
+Edit `/etc/mkinitcpio.conf`, add `rescue` to `HOOKS=()` — since ordering is now handled by the unit's own `After=`/`Before=` directives rather than array position, it just needs to be present alongside `systemd` and `sd-encrypt`:
 ```
 # Example — yours may differ, keep everything else as-is
-HOOKS=(base udev autodetect modconf kms keyboard keymap consolefont block sd-encrypt rescue filesystems fsck)
+HOOKS=(base systemd autodetect modconf kms keyboard sd-encrypt rescue block filesystems fsck)
 ```
 
-Order matters: `rescue` must come after `sd-encrypt`/`encrypt` so `/dev/mapper/root` already exists when the hook runs.
-
-### 1.3 Separate cmdlines
+### 1.5 Separate cmdlines
 
 `/etc/kernel/cmdline` (your existing normal one — leave as-is), and new file `/etc/kernel/cmdline_rescue`:
 ```bash
 cp /etc/kernel/cmdline /etc/kernel/cmdline_rescue
-echo -n " rescue=1" >> /etc/kernel/cmdline_rescue
+echo -n " rd.rescue_selector quiet loglevel=3 systemd.show_status=auto rd.udev.log_level=3" >> /etc/kernel/cmdline_rescue
 ```
+The extra params beyond `rd.rescue_selector` matter for a real reason: without them, other initrd units' own status output (and udev device-event chatter, likely from LUKS/btrfs device probing) share the same console as your interactive prompt with nothing serializing the two — which is exactly the non-deterministic interleaving you'd hit at the worst possible moment. `systemd.show_status=auto` suppresses routine successful-unit messages while still surfacing genuine failures (rather than `=false`, which would hide those too) — this is the Arch wiki's own documented combination for a quiet systemd-in-initramfs boot, applied only to the rescue path so your normal boot's verbosity is untouched.
+
 Verify it's one line, no trailing newline weirdness:
 ```bash
 cat /etc/kernel/cmdline_rescue
 ```
 
-**Rollback for this phase:** if the hook misbehaves, remove `rescue` from `HOOKS=()` and rebuild the normal initramfs. Nothing here touches disk encryption or boot signing yet.
+**Rollback for this phase:** if the service misbehaves, remove `rescue` from `HOOKS=()` and rebuild the normal initramfs. Nothing here touches disk encryption or boot signing yet.
 
 ---
 
@@ -344,7 +454,7 @@ This isn't "does it boot once" — it needs to exercise the retry logic, both ar
 
 Your existing snapshots (1, 189–194) all predate Phase 6 — none of them have an archive entry, by construction. Right now, "go back to however things currently are" has nothing to restore either, since that only gets populated going forward. Fix this once, right after Phase 6 is in place:
 ```bash
-sudo /usr/local/bin/rebuild-ukis.sh
+sudo /usr/local/bin/rebuild-normal-uki.sh
 ```
 
 ### 5.1 Baseline
@@ -388,23 +498,13 @@ Only after all of 5.1–5.8 pass should you consider the old raw-PCR fallback (P
 
 ---
 
-## Phase 6 — Automate for future kernel updates
+## Phase 6 — Automate the normal UKI only; rescue stays manual on purpose
 
-`/etc/pacman.d/hooks/95-ukify-rescue-sign.hook`:
-```ini
-[Trigger]
-Operation = Upgrade
-Operation = Install
-Type = Package
-Target = linux
+Two separate scripts, not one. The **normal** UKI needs to track every kernel update, so it's automated. The **rescue** UKI must never be touched by anything automatic — if a bad `ukify` version, a script bug, or some other automated failure ever corrupts a build, it should only be able to take down the thing that's already got the passphrase-protected TPM policy and Secure Boot as backstops, not the one thing designed to have no shared failure mode with normal boot. A rescue image that quietly regenerates itself on every kernel bump is a rescue image that can break at exactly the same moment normal boot does.
 
-[Action]
-Description = Rebuild and sign both UKIs after kernel update
-When = PostTransaction
-Exec = /usr/local/bin/rebuild-ukis.sh
-```
+### 6.1 Normal UKI — automated
 
-`/usr/local/bin/rebuild-ukis.sh`:
+`/usr/local/bin/rebuild-normal-uki.sh`:
 ```bash
 #!/bin/bash
 set -e
@@ -421,13 +521,7 @@ ukify build \
   --pcr-banks=sha256 \
   --output=/efi/EFI/Linux/arch-linux.efi
 
-ukify build \
-  --linux=/boot/vmlinuz-linux \
-  --initrd=/boot/initramfs-linux.img \
-  --cmdline=@/etc/kernel/cmdline_rescue \
-  --output=/efi/EFI/Linux/arch-linux-rescue.efi
-
-sbctl sign-all
+sbctl sign -s /efi/EFI/Linux/arch-linux.efi
 
 # Archive a copy of the (already-signed) normal UKI INSIDE @, so that any
 # future btrfs snapshot of @ automatically captures the exact UKI that was
@@ -444,7 +538,21 @@ mkdir -p /var/lib/uki-archive
 cp /efi/EFI/Linux/arch-linux.efi "/var/lib/uki-archive/arch-linux-${kver}-${ts}.efi"
 ```
 ```bash
-chmod +x /usr/local/bin/rebuild-ukis.sh
+chmod +x /usr/local/bin/rebuild-normal-uki.sh
+```
+
+`/etc/pacman.d/hooks/95-rebuild-normal-uki.hook`:
+```ini
+[Trigger]
+Operation = Upgrade
+Operation = Install
+Type = Package
+Target = linux
+
+[Action]
+Description = Rebuild and sign the normal UKI after kernel update
+When = PostTransaction
+Exec = /usr/local/bin/rebuild-normal-uki.sh
 ```
 
 No re-enrollment needed on future kernel updates — the signing key stays constant, only the PCR11 measurement (which the signature covers) changes per build.
@@ -456,6 +564,44 @@ No re-enrollment needed on future kernel updates — the signing key stays const
 rm /var/lib/uki-archive/arch-linux-<kver>-<timestamp>.efi
 ```
 Automated pruning is deliberately not provided — manual review of what's safe to delete is the intended, permanent behavior here, same reasoning as `@prev-*` cleanup in Phase 1: neither one should ever silently decide something is safe to remove.
+
+### 6.2 Rescue UKI — deliberately manual, never hooked into anything
+
+`/usr/local/bin/rebuild-rescue-uki.sh`:
+```bash
+#!/bin/bash
+set -e
+
+echo "Rebuilding the RESCUE UKI."
+echo "This is deliberately manual — run it yourself, on purpose, only when"
+echo "you have a specific reason to (cmdline_rescue changed, or you've"
+echo "decided it's time to move the rescue kernel forward). It is never"
+echo "triggered by a pacman hook or any other automation, so a bad build"
+echo "can't take down your one guaranteed-independent fallback at the same"
+echo "moment something else breaks normal boot."
+echo ""
+
+ukify build \
+  --linux=/boot/vmlinuz-linux \
+  --initrd=/boot/initramfs-linux.img \
+  --cmdline=@/etc/kernel/cmdline_rescue \
+  --output=/efi/EFI/Linux/arch-linux-rescue.efi
+
+sbctl sign -s /efi/EFI/Linux/arch-linux-rescue.efi
+
+echo "Done. Verify before trusting it:"
+echo "  sbctl verify"
+```
+```bash
+chmod +x /usr/local/bin/rebuild-rescue-uki.sh
+```
+
+**No pacman hook exists for this script, and none should.** Run it by hand:
+- Right after initial setup (Phase 3), to have a real rescue image in place.
+- Whenever you deliberately change `/etc/kernel/cmdline_rescue` — for instance, the quieting parameters added earlier for the console-noise fix require a manual rebuild to actually take effect; nothing does this for you.
+- Periodically, as a conscious decision, if you want the rescue kernel to track newer kernel versions rather than drift indefinitely behind — but only when you choose to, ideally followed by re-running Phase 5's test checklist before trusting the new build.
+
+Rescue's PCR11 is deliberately never signed (see Phase 3.3) — that's what makes it distinguishable from normal boot to the TPM. Nothing about splitting the scripts changes that; `sbctl sign` here only covers the Secure Boot signature, same as always.
 
 ---
 
@@ -472,7 +618,7 @@ mv /etc/tpm2-pcr-signing/public.pem /etc/tpm2-pcr-signing/public.pem.rotated-$(d
 
 ### 7.2 Generate the new keypair at the same canonical path
 
-Same path as before, so `rebuild-ukis.sh` needs no changes — only the content rotates.
+Same path as before, so `rebuild-normal-uki.sh` needs no changes — only the content rotates.
 ```bash
 openssl genrsa -out /etc/tpm2-pcr-signing/private.pem 2048
 openssl rsa -in /etc/tpm2-pcr-signing/private.pem -pubout -out /etc/tpm2-pcr-signing/public.pem
@@ -482,7 +628,7 @@ chmod 600 /etc/tpm2-pcr-signing/private.pem
 ### 7.3 Rebuild and re-sign the normal UKI under the new key
 
 ```bash
-sudo /usr/local/bin/rebuild-ukis.sh
+sudo /usr/local/bin/rebuild-normal-uki.sh
 ```
 
 ### 7.4 Enroll a new TPM2 slot against the new public key — alongside the old one

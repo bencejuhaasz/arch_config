@@ -5,6 +5,6 @@ Type = Package
 Target = linux
 
 [Action]
-Description = Rebuild and sign both UKIs after kernel update
+Description = Rebuild and sign the normal UKI after kernel update
 When = PostTransaction
-Exec = /usr/local/bin/rebuild-uki.sh
+Exec = /usr/local/bin/rebuild-normal-uki.sh
