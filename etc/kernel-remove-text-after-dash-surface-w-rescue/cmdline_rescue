@@ -1,0 +1,1 @@
+root=/dev/mapper/root rootflags=subvol=@ rw resume=/dev/mapper/root resume_offset=2904650 i915.enable_psr=0 i915.enable_dc=0 zswap.enabled=0 rd.rescue_selector quiet loglevel=3 systemd.show_status=auto rd.udev.log_level=3
