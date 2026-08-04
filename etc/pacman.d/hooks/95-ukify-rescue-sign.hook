@@ -3,6 +3,8 @@ Operation = Upgrade
 Operation = Install
 Type = Package
 Target = linux
+Target = linux-surface
+Target = linux-zen
 
 [Action]
 Description = Rebuild and sign the normal UKI after kernel update
