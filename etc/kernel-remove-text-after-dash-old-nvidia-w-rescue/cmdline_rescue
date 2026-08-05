@@ -1,0 +1,1 @@
+root=/dev/mapper/root rootflags=subvol=@ rw resume=/dev/mapper/swap nvidia_drm.modeset=1 nvidia_drm.fbdev=1 vm.swappiness=10 rd.rescue_selector quiet loglevel=3 systemd.show_status=auto rd.udev.log_level=3
