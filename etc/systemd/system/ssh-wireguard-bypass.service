@@ -1,0 +1,14 @@
+[Unit]
+Description=SSH WireGuard routing bypass
+Wants=network-online.target
+After=network-online.target wg-quick@wg-DE-438.service
+Requires=wg-quick@wg-DE-438.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ssh-wireguard-networkmanager-exclude.sh
+ExecStop=/usr/local/sbin/ssh-wireguard-networkmanager-exclude.sh off
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
