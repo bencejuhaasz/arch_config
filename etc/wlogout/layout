@@ -1,0 +1,36 @@
+{
+    "label" : "lock",
+    "action" : "swaylock -c 1E1E1E",
+    "text" : "[L]ock",
+    "keybind" : "l"
+}
+{
+    "label" : "hibernate",
+    "action" : "bright swaylock -c 1E1E1E & systemctl hibernate",
+    "text" : "[H]ibernate",
+    "keybind" : "h"
+}
+{
+    "label" : "logout",
+    "action" : "loginctl terminate-user $USER",
+    "text" : "[E]xit Sway",
+    "keybind" : "e"
+}
+{
+    "label" : "shutdown",
+    "action" : "systemctl poweroff",
+    "text" : "[O]ff",
+    "keybind" : "o"
+}
+{
+    "label" : "suspend",
+    "action" : "bright swaylock -c 1E1E1E & systemctl suspend",
+    "text" : "[S]uspend",
+    "keybind" : "s"
+}
+{
+    "label" : "reboot",
+    "action" : "systemctl reboot",
+    "text" : "[R]eboot",
+    "keybind" : "r"
+}

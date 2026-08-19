@@ -11,8 +11,8 @@ echo "moment something else breaks normal boot."
 echo ""
 
 ukify build \
-  --linux=/boot/vmlinuz-linux-surface \
-  --initrd=/boot/initramfs-linux-surface.img \
+  --linux=/boot/vmlinuz-linux-zen \
+  --initrd=/boot/initramfs-linux-zen.img \
   --cmdline=@/etc/kernel/cmdline_rescue \
   --output=/efi/EFI/Linux/arch-linux-rescue.efi
 

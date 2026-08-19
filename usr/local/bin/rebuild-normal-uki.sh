@@ -5,8 +5,8 @@ kver=$(uname -r 2>/dev/null || cat /usr/lib/modules/*/pkgbase 2>/dev/null | tail
 ts=$(date +%s)
 
 ukify build \
-  --linux=/boot/vmlinuz-linux-surface \
-  --initrd=/boot/initramfs-linux-surface.img \
+  --linux=/boot/vmlinuz-linux-zen \
+  --initrd=/boot/initramfs-linux-zen.img \
   --cmdline=@/etc/kernel/cmdline \
   --pcr-private-key=/etc/tpm2-pcr-signing/private.pem \
   --pcr-public-key=/etc/tpm2-pcr-signing/public.pem \
