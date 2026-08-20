@@ -6,7 +6,7 @@
 }
 {
     "label" : "hibernate",
-    "action" : "bright swaylock -c 1E1E1E & systemctl hibernate",
+    "action" : "bright 'swaylock -c 1E1E1E' & systemctl hibernate",
     "text" : "[H]ibernate",
     "keybind" : "h"
 }
@@ -24,7 +24,7 @@
 }
 {
     "label" : "suspend",
-    "action" : "bright swaylock -c 1E1E1E & systemctl suspend",
+    "action" : "bright 'swaylock -c 1E1E1E' & systemctl suspend",
     "text" : "[S]uspend",
     "keybind" : "s"
 }
