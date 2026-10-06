@@ -1,0 +1,141 @@
+This version drops the UID rules and the post-start rule swapping. The root cause of the fragility was that the daemon's cgroup only exists while the daemon runs, so rules referencing it couldn't load at boot. Here the cgroup exists from boot and doesn't depend on the daemon's state, so one static ruleset works.
+
+**How it works:**
+- A dedicated slice, `nymvpnd.slice`, is always active, and the daemon is placed in it, so the nft rule can match it at boot and across daemon restarts.
+- The guard loads before the network, and the daemon is ordered after it.
+- If the guard ever fails to load, a failsafe unit installs a block-everything table.
+- Opening the firewall is a deliberate `systemctl stop vpnguard`.
+
+I haven't tested any of this, so check the verification steps at the end.
+
+**1. `/etc/systemd/system/nymvpnd.slice`**
+```
+[Unit]
+Description=Cgroup anchor for the Nym daemon (matched by vpnguard)
+DefaultDependencies=no
+
+[Slice]
+```
+The name has no hyphen on purpose, since systemd treats `a-b.slice` as a child of `a.slice`, which would change the cgroup level.
+
+**2. `/etc/nftables-vpnguard.conf`**
+```
+add table inet vpnguard
+delete table inet vpnguard
+
+table inet vpnguard {
+  chain output {
+    type filter hook output priority filter; policy drop;
+
+    oif "lo" accept
+
+    # Nym daemon: its own cgroup, present from boot
+    socket cgroupv2 level 1 "nymvpnd.slice" accept
+
+    # Nym's own marks and tunnels
+    ct mark 0x00000f42 accept
+    meta mark 0x0000014d accept
+    oifname "tun*" accept
+
+    # Joining the local network
+    oifname "wlp0s20f3" udp sport 68 udp dport 67 accept
+    oifname "wlp0s20f3" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } th dport { 53, 853 } meta l4proto { tcp, udp } accept
+
+    # Optional: time sync, if clock drift causes Nym auth errors
+    # oifname "wlp0s20f3" udp dport 123 accept
+
+    limit rate 5/second log prefix "vpnguard-drop: "
+    meta l4proto tcp reject with tcp reset
+    reject
+  }
+}
+```
+
+**3. `/etc/nftables-vpnguard-failsafe.conf`**
+```
+add table inet vpnguard
+delete table inet vpnguard
+
+table inet vpnguard {
+  chain output {
+    type filter hook output priority filter; policy drop;
+    oif "lo" accept
+  }
+}
+```
+
+**4. `/etc/systemd/system/vpnguard.service`**
+```
+[Unit]
+Description=Fail-closed output firewall (vpnguard)
+DefaultDependencies=no
+Requires=nymvpnd.slice
+After=nymvpnd.slice local-fs.target
+Before=network-pre.target
+Wants=network-pre.target
+OnFailure=vpnguard-failsafe.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/nft -f /etc/nftables-vpnguard.conf
+ExecReload=/usr/bin/nft -f /etc/nftables-vpnguard.conf
+ExecStop=-/usr/bin/nft delete table inet vpnguard
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**5. `/etc/systemd/system/vpnguard-failsafe.service`**
+```
+[Unit]
+Description=vpnguard failsafe: block all output
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/nft -f /etc/nftables-vpnguard-failsafe.conf
+```
+
+**6. Replace `/etc/systemd/system/nym-vpnd.service.d/override.conf`**
+
+This also removes my earlier `network-online` lines, which you didn't want.
+```
+[Unit]
+After=vpnguard.service
+
+[Service]
+Slice=nymvpnd.slice
+```
+I used `After=` only, with no `Wants=`, so restarting the daemon never silently re-arms a firewall you opened on purpose.
+
+**Apply, with a safety net in case something breaks:**
+```
+rm -f /etc/nftables-vpnguard-daemon.conf
+systemctl daemon-reload
+systemctl start nymvpnd.slice
+nft -c -f /etc/nftables-vpnguard.conf
+systemd-run --on-active=180 systemctl stop vpnguard   # auto-opens after 3 min
+systemctl enable --now vpnguard
+systemctl restart nym-vpnd
+```
+
+**Verify:**
+```
+cat /sys/fs/cgroup/nymvpnd.slice/cgroup.procs      # should list the daemon PID(s)
+nft list table inet vpnguard | grep cgroupv2
+journalctl -k -f | grep vpnguard-drop              # while the VPN connects
+```
+If the VPN connects and the drop log stays quiet, cancel the safety timer (find it with `systemctl list-timers`) and reboot to test the boot path.
+
+**Daily use:**
+- `systemctl stop vpnguard` opens everything, until you start it again.
+- `systemctl start vpnguard` closes it.
+- `systemctl reload vpnguard` reapplies the rules without a gap.
+
+**Assumptions to check:**
+- An empty, active slice keeps its cgroup. I believe it does, but the `ls /sys/fs/cgroup/nymvpnd.slice` check will confirm it. If `nft -c` complains about the cgroup path, the slice isn't active.
+- Before the tunnel exists, the daemon's name lookups go through systemd-resolved, which is not in the slice. They only work if your DHCP DNS server is a private address, like your router. If the drop log shows port 53 or 853 to a public address, tell me, because the DNS line needs a change.
+- The Wi-Fi interface name `wlp0s20f3` and disabled IPv6 on the underlay are assumed. With IPv6 enabled on Wi-Fi, add Nym's neighbor-discovery rules from your dump.
+- Nym's split-tunnel cgroup marks its apps with the same mark, so those apps would bypass the guard by design. You don't use that feature, so it doesn't matter now.
+- The guard only filters output. Inbound filtering is Nym's job while it is engaged.

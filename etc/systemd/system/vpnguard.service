@@ -1,0 +1,18 @@
+[Unit]
+Description=Fail-closed output firewall (vpnguard)
+DefaultDependencies=no
+Requires=nymvpnd.slice
+After=nymvpnd.slice local-fs.target
+Before=network-pre.target
+Wants=network-pre.target
+OnFailure=vpnguard-failsafe.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/nft -f /etc/nftables-vpnguard.conf
+ExecReload=/usr/bin/nft -f /etc/nftables-vpnguard.conf
+ExecStop=-/usr/bin/nft delete table inet vpnguard
+
+[Install]
+WantedBy=multi-user.target

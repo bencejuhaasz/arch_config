@@ -1,0 +1,7 @@
+[Unit]
+Description=vpnguard failsafe: block all output
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/nft -f /etc/nftables-vpnguard-failsafe.conf

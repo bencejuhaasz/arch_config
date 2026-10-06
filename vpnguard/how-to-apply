@@ -1,0 +1,7 @@
+rm -f /etc/nftables-vpnguard-daemon.conf
+systemctl daemon-reload
+systemctl start nymvpnd.slice
+nft -c -f /etc/nftables-vpnguard.conf
+systemd-run --on-active=180 systemctl stop vpnguard   # auto-opens after 3 min
+systemctl enable --now vpnguard
+systemctl restart nym-vpnd
